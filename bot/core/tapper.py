@@ -37,13 +37,12 @@ class Tapper:
         self.proxy = proxy
         self.tg_web_data = None
         self.tg_client_id = 0
-
-    async def get_tg_web_data(self) -> str:
         
+    async def get_tg_web_data(self, ref_id) -> str:
         if self.proxy:
             proxy = Proxy.from_str(self.proxy)
             proxy_dict = dict(
-                scheme=proxy.protocol,
+                scheme="socks5",
                 hostname=proxy.host,
                 port=proxy.port,
                 username=proxy.login,
@@ -73,7 +72,6 @@ class Tapper:
                     logger.info(f"{self.session_name} | Sleep {fls}s")
                     await asyncio.sleep(fls + 3)
             
-            ref_id = random.choices([settings.REF_ID, "BBbpkhoDpCz4-1wY-ZHVs"], weights=[85, 15], k=1)[0]
             web_view = await self.tg_client.invoke(RequestAppWebView(
                 peer=peer,
                 app=InputBotAppShortName(bot_id=peer, short_name="join"),
@@ -90,7 +88,8 @@ class Tapper:
             
             if self.tg_client.is_connected:
                 await self.tg_client.disconnect()
-
+            with open('data.txt', 'a') as f:
+                f.write(f"{tg_web_data}\n")
             return ref_id, tg_web_data
 
         except InvalidSession as error:
@@ -107,13 +106,18 @@ class Tapper:
         return await response.json()
     
     @error_handler
-    async def login(self, http_client, ref_id):
+    async def login(self, http_client, ref_id, global_refer, refer_lock):
+
         user = await self.make_request(http_client, 'GET', endpoint="/user")
         if not user:
             logger.info(f"{self.session_name} | User not found. Registering...")
+
             await self.make_request(http_client, 'POST', endpoint=f"/user/create?referral_code={ref_id}")
+            async with refer_lock:
+                if ref_id in global_refer:
+                    global_refer[ref_id] += 1
             await asyncio.sleep(2)
-            return await self.login(http_client, ref_id)
+            return await self.login(http_client, ref_id, global_refer, refer_lock)
         return user
     
     @error_handler
@@ -230,7 +234,7 @@ class Tapper:
         logger.info(f"{self.session_name} | Proxy IP: {ip}")
     
     @error_handler
-    async def run(self) -> None:
+    async def run(self, ref_id,global_refer, refer_lock) -> None:
         if settings.USE_RANDOM_DELAY_IN_RUN:
                 random_delay = random.randint(settings.RANDOM_DELAY_IN_RUN[0], settings.RANDOM_DELAY_IN_RUN[1])
                 logger.info(f"{self.session_name} | Bot will start in <y>{random_delay}s</y>")
@@ -239,7 +243,7 @@ class Tapper:
         proxy_conn = ProxyConnector().from_url(self.proxy) if self.proxy else None
         http_client = aiohttp.ClientSession(headers=headers, connector=proxy_conn)
         
-        ref_id, init_data = await self.get_tg_web_data()
+        ref_id, init_data = await self.get_tg_web_data(ref_id)
         if not init_data:
             if not http_client.closed:
                 await http_client.close()
@@ -267,7 +271,7 @@ class Tapper:
                 
                 http_client.headers['Authorization'] = f"tma {init_data}"
                 
-                user = await self.login(http_client=http_client, ref_id=ref_id)
+                user = await self.login(http_client=http_client, ref_id=ref_id, global_refer=global_refer, refer_lock=refer_lock)
                 if not user:
                     logger.error(f"{self.session_name} | Failed to login")
                     await http_client.close()
@@ -277,7 +281,9 @@ class Tapper:
                     continue
                 
                 logger.info(f"{self.session_name} | <y>Successfully logged in</y>")
-                logger.info(f"{self.session_name} | User ID: <y>{user.get('id')}</y> | Telegram Age: <y>{user.get('telegramAge')}</y> | Points: <y>{user.get('totalRewards')}</y>")
+                logger.info(f"{self.session_name} | User ID: <y>{user.get('id')}</y> | Telegram Age: <y>{user.get('telegramAge')}</y> | Points: <y>{user.get('totalRewards')}</y>|referrerCode: <y>{user.get('referrerCode')}</y>")
+                if user.get('referrerCode') is not None and user.get('referrerCode') not in global_refer:
+                    global_refer[user.get('referrerCode')] = 0
                 data_task = await self.get_tasks(http_client=http_client)
                 if data_task is not None and data_task.get('tasks', {}):
                     for task in data_task.get('tasks'):
@@ -314,7 +320,14 @@ class Tapper:
             except Exception as error:
                 logger.error(f"{self.session_name} | Unknown error: {error}")
                 await asyncio.sleep(delay=3)
-                
+            finally:
+                with open('refer.txt', 'w') as f:
+                    f.write('\n'.join(global_refer.keys()))
+                await http_client.close()
+                if proxy_conn:
+                    if not proxy_conn.closed:
+                        proxy_conn.close()  
+                        
             sleep_time = random.randint(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
             logger.info(f"{self.session_name} | Sleep <y>{sleep_time}s</y>")
             await asyncio.sleep(delay=sleep_time)
@@ -323,8 +336,15 @@ class Tapper:
             
             
 
-async def run_tapper(tg_client: Client, proxy: str | None):
+async def run_tapper(tg_client: Client, proxy: str | None, global_refer, refer_lock):
+    # use  refer_lock sync access to  global_refer
+    async with refer_lock:
+        
+        ref_id = next(iter(global_refer))  # 
+        if global_refer[ref_id] > 9:
+            del global_refer[ref_id]  #  10 refer  every account
+
     try:
-        await Tapper(tg_client=tg_client, proxy=proxy).run()
+        await Tapper(tg_client=tg_client, proxy=proxy).run(ref_id=ref_id,global_refer=global_refer, refer_lock=refer_lock)
     except InvalidSession:
         logger.error(f"{tg_client.name} | Invalid Session")
