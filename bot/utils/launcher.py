@@ -76,7 +76,7 @@ async def get_tg_clients() -> list[Client]:
     return tg_clients
 
 
-async def process() -> None:
+async def process(global_refer, refer_lock) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-a", "--action", type=int, help="Action to perform")
 
@@ -100,6 +100,13 @@ async def process() -> None:
 
     if action == 1:
         tg_clients = await get_tg_clients()
+        await run_tasks(tg_clients=tg_clients, global_refer=global_refer, refer_lock=refer_lock)
+
+    elif action == 2:
+        await register_sessions()
+
+    if action == 1:
+        tg_clients = await get_tg_clients()
 
         await run_tasks(tg_clients=tg_clients)
 
@@ -109,17 +116,20 @@ async def process() -> None:
 
 
 
-async def run_tasks(tg_clients: list[Client]):
+async def run_tasks(tg_clients: list[Client], global_refer, refer_lock):
     proxies = get_proxies()
     proxies_cycle = cycle(proxies) if proxies else None
-    tasks = [
-        asyncio.create_task(
-            run_tapper(
-                tg_client=tg_client,
-                proxy=next(proxies_cycle) if proxies_cycle else None,
-            )
-        )
-        for tg_client in tg_clients
-    ]
+    tasks = []        
+        
+    semaphore = Semaphore(20) # asynico  semaphore limit 
 
+    async def run_tapper_with_semaphore(tg_client, proxy):
+        async with semaphore:
+            await run_tapper(tg_client=tg_client, proxy=proxy, global_refer=global_refer, refer_lock=refer_lock)
+        await asyncio.sleep(1)
+
+    for i, tg_client in enumerate(tg_clients):
+        proxy = random.choice(proxies) if proxies else None
+        task = asyncio.create_task(run_tapper_with_semaphore(tg_client, proxy))
+        tasks.append(task)
     await asyncio.gather(*tasks)
